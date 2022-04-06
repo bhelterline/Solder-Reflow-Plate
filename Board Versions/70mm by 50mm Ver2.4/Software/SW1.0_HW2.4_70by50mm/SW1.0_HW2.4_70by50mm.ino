@@ -57,6 +57,8 @@ const byte maxTempCount = sizeof(maxTempArray) / sizeof(maxTempArray[0]);
 byte maxTempIndex = 0;
 byte tempIndexAddr = 1;
 
+float previousRiseTemp = 0.0;
+
 //Voltage Measurement Info
 const float vConvert = 52.00;
 const float vMin = 10.50;
@@ -137,11 +139,14 @@ static const uint8_t PROGMEM tick[] = {
 static const uint8_t tick_width = 16;
 static const uint8_t tick_height = 15;
 
-enum { IDLE, HEATING, COOL_DOWN, COMPLETE, CANCEL_PB, CANCEL_TIMEOUT };
+enum { IDLE, HEATING, COOL_DOWN, COMPLETE, CANCEL_PB, CANCEL_TIMEOUT, ERROR };
 int currentState = IDLE;
 
 unsigned long heatStartTime;
+unsigned long tempRiseTime;
 unsigned long heatTimeout = 1000UL * 60 * 8;  // 8 minute timeout
+unsigned long heatRiseTime;
+unsigned const long riseTimeInterval = 10000;       //10 seconds
 
 void setup() {
 
@@ -205,7 +210,6 @@ void beginState( int state ) {
       // display IDLE screen
       display.clearDisplay();
       display.setTextSize(1);
-      display.drawRoundRect( 0, 0, 83, 32, 2, SSD1306_WHITE);
 
       break;
 
@@ -222,18 +226,13 @@ void beginState( int state ) {
       display.display();
       delay(3000);
       heatStartTime = millis();
+      heatRiseTime = millis();
+      previousRiseTemp = getTemp();
       break;
 
     case COOL_DOWN:
       // begin cool down
       digitalWrite(mosfet, LOW);
-      display.clearDisplay();
-      display.drawRoundRect( 22, 0, 84, 32, 2, SSD1306_WHITE );
-      display.setCursor(25, 4);
-      display.print(F("  COOL DOWN"));
-      display.drawLine( 25, 12, 103, 12, SSD1306_WHITE );
-      display.setCursor(25, 14);
-      display.println("  Still Hot");
       break;
 
     case COMPLETE:
@@ -279,6 +278,28 @@ void beginState( int state ) {
       digitalWrite(mosfet, LOW);
       cancelledTimeout();
       break;
+
+    case ERROR:
+      digitalWrite(mosfet, LOW);
+      display.clearDisplay();
+      display.drawRoundRect( 22, 0, 84, 32, 2, SSD1306_WHITE );
+      display.setCursor(25, 4);
+      display.print(F("  TEMP ERROR  "));
+      display.drawLine( 25, 12, 103, 12, SSD1306_WHITE );
+      display.setCursor(25, 14);
+      display.println(" Push button");
+      display.setCursor(25, 22);
+      display.println("  to return");
+      display.setTextSize(3);
+      display.setCursor(5, 4);
+      display.print(F("!"));
+      display.setTextSize(3);
+      display.setCursor(108, 4);
+      display.print(F("!"));
+      display.setTextSize(1);
+      display.display();
+      break;
+
 
     default:
       // tried to switch to an unknown state
@@ -351,34 +372,47 @@ void checkState() {
         beginState(IDLE);
       }
       break;
+
+    case ERROR:
+      // any button presses returns to idle
+      if (upButton.pressed() || downButton.pressed()) {
+        beginState(IDLE);
+      }
+      break;
+
   }
 }
 
 
 void updateIdleDisplay() {
-  const unsigned long interval = 1000;  // toggle every second
+  const unsigned long interval = 5000;  // toggle every second
   static unsigned long lastTime;
   static bool state = true;
 
+  display.clearDisplay();
+  display.drawRoundRect( 0, 0, 83, 32, 2, SSD1306_WHITE);
+
   if ( millis() - lastTime >= interval ) {
-    //Change Display (left-side)
-    if ( state ) {
-      display.setCursor(3, 4);
-      display.print(F("PRESS BUTTONS"));
-      display.drawLine( 3, 12, 79, 12, SSD1306_WHITE);
-      display.setCursor(3, 14);
-      display.print(F(" Change  MAX"));
-      display.setCursor(3, 22);
-      display.print(F(" Temperature"));
-    }
-    else {
-      display.setCursor(3, 4);
-      display.print(F("HOLD  BUTTONS"));
-      display.drawLine( 3, 12, 79, 12, SSD1306_WHITE );
-      display.setCursor(3, 18);
-      display.print(F("Begin Heating"));
-    }
+    lastTime = millis();
     state = !state;
+  }
+
+  //Change Display (left-side)
+  if ( state ) {
+    display.setCursor(3, 4);
+    display.print(F("PRESS BUTTONS"));
+    display.drawLine( 3, 12, 79, 12, SSD1306_WHITE);
+    display.setCursor(3, 14);
+    display.print(F(" Change  MAX"));
+    display.setCursor(3, 22);
+    display.print(F(" Temperature"));
+  }
+  else {
+    display.setCursor(3, 4);
+    display.print(F("HOLD  BUTTONS"));
+    display.drawLine( 3, 12, 79, 12, SSD1306_WHITE );
+    display.setCursor(3, 18);
+    display.print(F("Begin Heating"));
   }
 
   //Update Display (right-side)
@@ -403,12 +437,13 @@ bool checkHeat() {
   byte warmUpPWM = 0.72 * warmUpTemp;
   float t; //Used to store current temperature
   float v; //Used to store current voltage
-  byte pwmVal = 0; //PWM Value applied to MOSFET
+  static byte pwmVal = 0; //PWM Value applied to MOSFET
 
   //Other control variables
   static int x = 0;  //Heat Animate Counter
   const int y = 80; //Heat Animate max (modulused below)
 
+  bool noTempRise = false;
 
   //Measure Values
   t = getTemp();
@@ -438,6 +473,22 @@ bool checkHeat() {
   }
   if (pwmVal > maxPWM ) {
     pwmVal = maxPWM;  //Catch incase of runaway
+  }
+
+  //basic check to see if the temp is rising
+  if ( millis() - heatRiseTime >= riseTimeInterval ) {
+    heatRiseTime = millis();
+    if(t-previousRiseTemp < 2.0 ) {
+        noTempRise = true;
+    } else {
+      previousRiseTemp = t;
+    }
+  }
+
+  //move to error state if no temp rise, or sensor is missing/malfunctioning
+  if(t<=0 || noTempRise) {
+    beginState(ERROR);
+    return false;
   }
 
   //MOSFET Control
@@ -530,7 +581,13 @@ bool checkCoolDown() {
   if ( t < 45.0) {
     return true;  // all done
   }
-
+  display.clearDisplay();
+  display.drawRoundRect( 22, 0, 84, 32, 2, SSD1306_WHITE );
+  display.setCursor(25, 4);
+  display.print(F("  COOL DOWN"));
+  display.drawLine( 25, 12, 103, 12, SSD1306_WHITE );
+  display.setCursor(25, 14);
+  display.println("  Still Hot");
   if ( t >= 100 ) {
     display.setCursor(49, 22);
   }
