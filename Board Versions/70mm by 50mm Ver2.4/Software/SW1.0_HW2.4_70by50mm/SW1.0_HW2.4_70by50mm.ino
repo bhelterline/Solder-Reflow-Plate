@@ -533,12 +533,12 @@ bool checkCoolDown() {
     return true;  // all done
   }
 
+  display.setCursor(52, 22);
   if ( t >= 100 ) {
     display.setCursor(49, 22);
   }
-  else           {
-    display.setCursor(52, 22);
-  }
+
+  display.fillRect(49, 22, 50, 8, SSD1306_BLACK);
   display.print(F("~"));
   display.print(t, 0);
   display.print(F("C"));
