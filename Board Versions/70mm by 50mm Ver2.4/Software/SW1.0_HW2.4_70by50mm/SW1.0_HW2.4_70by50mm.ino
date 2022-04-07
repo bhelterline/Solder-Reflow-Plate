@@ -51,7 +51,7 @@ Bounce2::Button upButton;
 Bounce2::Button downButton;
 
 //Temperature Info
-const byte maxTempArray[] = { 140, 150, 160, 170, 180 };
+const byte maxTempArray[] = { 140, 145, 150, 155, 160, 165, 170, 175, 180, 185, 190, 195, 200 };
 const byte maxTempCount = sizeof(maxTempArray) / sizeof(maxTempArray[0]);
 
 byte maxTempIndex = 0;
@@ -142,14 +142,12 @@ int currentState = IDLE;
 
 unsigned long heatStartTime;
 unsigned long heatTimeout = 1000UL * 60 * 8;  // 8 minute timeout
+byte pwmVal = 0; // PWM Value applied to MOSFET, default to 0
 
 void setup() {
-
   //Pin Direction control
   pinMode(mosfet, OUTPUT);
   digitalWrite(mosfet, LOW);
-  //  pinMode(upsw, INPUT);
-  //  pinMode(dnsw, INPUT);
   pinMode(temp, INPUT);
   pinMode(vcc, INPUT);
 
@@ -168,7 +166,7 @@ void setup() {
   TCCR2A = _BV(COM2A1) | _BV(COM2B1) | _BV(WGM21) | _BV(WGM20);
   TCCR2B = _BV(CS20);
 
-  //Start-up Diplay
+  // Start-up Diplay
   display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS);
   display.clearDisplay();
   display.setTextSize(1);
@@ -189,16 +187,15 @@ void setup() {
 }
 
 void loop() {
-
   upButton.update();
   downButton.update();
   checkState();
 }
 
-
 void beginState( int state ) {
   if ( currentState == state ) return;  // already in this state
 
+  pwmVal = 0; // Reset to 0
   currentState = state;
   switch ( state ) {
     case IDLE:
@@ -206,15 +203,14 @@ void beginState( int state ) {
       display.clearDisplay();
       display.setTextSize(1);
       display.drawRoundRect( 0, 0, 83, 32, 2, SSD1306_WHITE);
-
       break;
 
     case HEATING:
       // begin heating
       display.clearDisplay();
       display.setTextSize(2);
-      display.setCursor(22, 4);
-      display.print(F("HEATING"));
+      display.setCursor(32, 4);
+      display.print(F("HEATUP"));
       display.setTextSize(1);
       display.setCursor(52, 24);
       display.print(maxTempArray[maxTempIndex]);
@@ -288,7 +284,6 @@ void beginState( int state ) {
 }
 
 void checkState() {
-
   switch (currentState) {
     case IDLE:
       updateIdleDisplay();
@@ -356,11 +351,13 @@ void checkState() {
 
 
 void updateIdleDisplay() {
-  const unsigned long interval = 1000;  // toggle every second
+  const unsigned long interval = 3000;  // toggle every X second
   static unsigned long lastTime;
   static bool state = true;
 
   if ( millis() - lastTime >= interval ) {
+    display.clearDisplay();
+    
     //Change Display (left-side)
     if ( state ) {
       display.setCursor(3, 4);
@@ -379,9 +376,11 @@ void updateIdleDisplay() {
       display.print(F("Begin Heating"));
     }
     state = !state;
+    lastTime = millis();
   }
 
-  //Update Display (right-side)
+  // Update Display (right-side)
+  display.fillRect(95, 18, 30, 20, SSD1306_BLACK);
   display.setCursor(95, 6);
   display.print(F("TEMP"));
   display.setCursor(95, 18);
@@ -392,23 +391,20 @@ void updateIdleDisplay() {
 
 
 bool checkHeat() {
-
   //Heater Control Variables
   /*  Heater follows industry reflow graph. Slow build-up to 'warmUp' temp. Rapid ascent
       to 'maxTemp'. Then descent to room temperature.
   */
-  byte maxTemp = maxTempArray[maxTempIndex];
-  byte maxPWM = 0.70 * maxTemp; //Temperatures (in PWM / 255) influenced by paste temperature
-  byte warmUpTemp = 0.75 * maxTemp;
-  byte warmUpPWM = 0.72 * warmUpTemp;
+  int maxTemp = maxTempArray[maxTempIndex];
+  int maxPWM = 0.70 * maxTemp; // Temperatures (in PWM / 255) influenced by paste temperature
+  int warmUpTemp = 0.75 * maxTemp;
+  int warmUpPWM = 0.72 * warmUpTemp;
   float t; //Used to store current temperature
   float v; //Used to store current voltage
-  byte pwmVal = 0; //PWM Value applied to MOSFET
 
   //Other control variables
   static int x = 0;  //Heat Animate Counter
   const int y = 80; //Heat Animate max (modulused below)
-
 
   //Measure Values
   t = getTemp();
@@ -416,7 +412,7 @@ bool checkHeat() {
 
   //Reflow Profile
   if (t < warmUpTemp) { //Warm Up Section
-    if (pwmVal != warmUpPWM) {
+    if (pwmVal < warmUpPWM) {
       pwmVal++;  //Slowly ramp to desired PWM Value
     }
     if (v < vMin && pwmVal > 1) {
@@ -445,32 +441,40 @@ bool checkHeat() {
 
   //Heat Animate Control
   display.clearDisplay();
-  display.drawBitmap( 0, 3, heat_animate, heat_animate_width, heat_animate_height, SSD1306_WHITE);
-  display.drawBitmap( 112, 3, heat_animate, heat_animate_width, heat_animate_height, SSD1306_WHITE);
-  display.fillRect( 0, 3, heat_animate_width, heat_animate_height * (y - x) / y, SSD1306_BLACK);
-  display.fillRect( 112, 3, heat_animate_width, heat_animate_height * (y - x) / y, SSD1306_BLACK);
+  display.drawBitmap( 0, 1, heat_animate, heat_animate_width, heat_animate_height, SSD1306_WHITE);
+  display.fillRect( 0, 1, heat_animate_width, heat_animate_height * (y - x) / y, SSD1306_BLACK);
   x = ( x + 1 ) % y; //Heat animate increment and modulus
 
   //Update display
   display.setTextSize(2);
-  display.setCursor(22, 4);
-  display.print(F("HEATING"));
+  display.setCursor(20, 4);
+  display.print(F("HEATUP"));
   display.setTextSize(1);
-  display.setCursor(20, 24);
+
+  // Voltage
+  display.setCursor(1, 24);
+  display.print(v, 0);
+  display.print(F("V "));
+
+  // PWM
+  float percentile = map(pwmVal, 0, 255, 0, 100);
   display.print(F("~"));
-  display.print(v, 1);
-  display.print(F("V"));
-  if ( t >= 100 )      {
-    display.setCursor(78, 24);
-  }
-  else if ( t >= 10 ) {
-    display.setCursor(81, 24);
-  }
-  else {
-    display.setCursor(84, 24);
-  }
-  display.print(F("~"));
+  display.print(percentile, 1);
+  display.print(F("% "));;
+  
+  // Current Temp
+  display.setCursor(93, 6);
+  display.print("~");
   display.print(t, 0);
+  display.print(F("C"));
+
+  // Separator line
+  display.fillRect(93, 17, 30, 1, SSD1306_WHITE);
+
+  // Target Temp
+  display.setCursor(93, 22);
+  display.print(">");
+  display.print(maxTemp);
   display.print(F("C"));
   display.display();
   return false;   // not finished yes
@@ -478,7 +482,6 @@ bool checkHeat() {
 
 
 void cancelledTimeout() {
-
   const unsigned long interval = 1000;
   static unsigned long lastTime;
   static byte msg = 0;
@@ -524,7 +527,6 @@ void cancelledTimeout() {
 }
 
 bool checkCoolDown() {
-
   float t = getTemp(); //Used to store current temperature
 
   if ( t < 45.0) {
